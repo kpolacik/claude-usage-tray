@@ -26,19 +26,15 @@ CRIT_THRESHOLD = 90                 # % at which tray icon turns red
 NOTIFY_ON_WARN = True               # Windows toast when crossing warn threshold
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
+ICON_PATH = Path(__file__).parent / "icon.png"
 
 # ── Popup style constants ─────────────────────────────────────────────────────
-POPUP_W, POPUP_H = 340, 240
-BG_COLOR       = "#1e1f22"
-TEXT_PRIMARY    = "#ffffff"
-TEXT_SECONDARY  = "#a0a0a0"
-DIVIDER_COLOR  = "#2e2f33"
-TRACK_COLOR    = "#3a3b3e"
-GREEN          = "#4caf7d"
-AMBER          = "#e6a817"
-RED            = "#e05252"
-BAR_ANIM_MS    = 400       # total animation duration
-BAR_ANIM_STEP  = 16        # ms per frame
+POPUP_W, POPUP_H = 440, 290
+BG_COLOR       = "#1e1f22"   # surface
+ON_SURFACE     = "#d1d1d1"   # primary text, borders, bar fill
+MICRO_COLOR    = "#919191"   # footer / timestamp micro-copy
+BAR_ANIM_MS    = 400         # total animation duration
+BAR_ANIM_STEP  = 16          # ms per frame
 
 
 # ── Token loading ─────────────────────────────────────────────────────────────
@@ -130,13 +126,6 @@ def fmt_reset_date(reset_dt: datetime | None) -> str:
     local_dt = reset_dt.astimezone()
     return local_dt.strftime("%a %d %b, %H:%M")
 
-
-def _bar_fill_color(pct: float) -> str:
-    if pct >= CRIT_THRESHOLD:
-        return RED
-    if pct >= WARN_THRESHOLD:
-        return AMBER
-    return GREEN
 
 
 # ── Icon drawing ──────────────────────────────────────────────────────────────
@@ -291,41 +280,35 @@ class UsagePopup:
     # ── content ───────────────────────────────────────────────────────────────
 
     def _build_content(self, win: tk.Toplevel):
-        pad = 20
+        pad = 16
         inner_w = POPUP_W - pad * 2
 
-        container = tk.Frame(win, bg=BG_COLOR)
-        container.pack(fill="both", expand=True, padx=pad, pady=(pad, pad))
-
-        # ── Header row ────────────────────────────────────────────────────────
-        header = tk.Frame(container, bg=BG_COLOR)
-        header.pack(fill="x")
+        # ── Header ────────────────────────────────────────────────────────────
+        header = tk.Frame(win, bg=BG_COLOR)
+        header.pack(fill="x", padx=pad, pady=(12, 0))
 
         tk.Label(
             header, text="CLAUDE CODE USAGE", bg=BG_COLOR,
-            fg=TEXT_SECONDARY, font=("Segoe UI", 9), anchor="w"
+            fg=ON_SURFACE, font=("Segoe UI", 11, "bold"), anchor="w"
         ).pack(side="left")
 
         btn_open = tk.Label(
-            header, text="\u2197", bg=BG_COLOR, fg=TEXT_SECONDARY,
-            font=("Segoe UI", 12), cursor="hand2"
+            header, text="\u29c9", bg=BG_COLOR, fg=ON_SURFACE,
+            font=("Segoe UI", 13), cursor="hand2"
         )
         btn_open.pack(side="right", padx=(4, 0))
         btn_open.bind("<Button-1>", lambda e: webbrowser.open("https://claude.ai/settings/usage"))
-        btn_open.bind("<Enter>", lambda e: btn_open.config(fg=TEXT_PRIMARY))
-        btn_open.bind("<Leave>", lambda e: btn_open.config(fg=TEXT_SECONDARY))
+        btn_open.bind("<Enter>", lambda e: btn_open.config(bg="#2a2b2f"))
+        btn_open.bind("<Leave>", lambda e: btn_open.config(bg=BG_COLOR))
 
         btn_refresh = tk.Label(
-            header, text="\u21bb", bg=BG_COLOR, fg=TEXT_SECONDARY,
-            font=("Segoe UI", 12), cursor="hand2"
+            header, text="\u21bb", bg=BG_COLOR, fg=ON_SURFACE,
+            font=("Segoe UI", 13), cursor="hand2"
         )
-        btn_refresh.pack(side="right")
+        btn_refresh.pack(side="right", padx=(0, 4))
         btn_refresh.bind("<Button-1>", lambda e: self._do_refresh())
-        btn_refresh.bind("<Enter>", lambda e: btn_refresh.config(fg=TEXT_PRIMARY))
-        btn_refresh.bind("<Leave>", lambda e: btn_refresh.config(fg=TEXT_SECONDARY))
-
-        # ── Divider ───────────────────────────────────────────────────────────
-        tk.Frame(container, bg=DIVIDER_COLOR, height=1).pack(fill="x", pady=(10, 12))
+        btn_refresh.bind("<Enter>", lambda e: btn_refresh.config(bg="#2a2b2f"))
+        btn_refresh.bind("<Leave>", lambda e: btn_refresh.config(bg=BG_COLOR))
 
         # ── Data ──────────────────────────────────────────────────────────────
         with self.app._lock:
@@ -334,14 +317,17 @@ class UsagePopup:
 
         self._anim_bars = []
 
+        main = tk.Frame(win, bg=BG_COLOR)
+        main.pack(fill="both", expand=True, padx=pad, pady=(10, 0))
+
         if err:
             tk.Label(
-                container, text=err, bg=BG_COLOR, fg=RED,
+                main, text=err, bg=BG_COLOR, fg=ON_SURFACE,
                 font=("Segoe UI", 10), anchor="w"
             ).pack(fill="x")
         elif data is None:
             tk.Label(
-                container, text="Loading\u2026", bg=BG_COLOR, fg=TEXT_SECONDARY,
+                main, text="Loading\u2026", bg=BG_COLOR, fg=ON_SURFACE,
                 font=("Segoe UI", 10), anchor="w"
             ).pack(fill="x")
         else:
@@ -350,40 +336,77 @@ class UsagePopup:
                 pct = fh.get("utilization", 0)
                 reset = parse_reset(fh.get("resets_at"))
                 bar = self._make_bar_section(
-                    container, "5h Session", pct,
-                    f"Resets in  {fmt_countdown(reset)}",
+                    main, "5h Session", pct,
+                    f"Resets in {fmt_countdown(reset)}",
                     inner_w, reset_dt=reset
                 )
-                self._anim_bars.append({"canvas": bar, "target": pct, "current": 0, "width": inner_w})
+                self._anim_bars.append({"canvas": bar, "target": pct, "width": inner_w})
 
-            fh_frame_spacer = tk.Frame(container, bg=BG_COLOR, height=8)
-            fh_frame_spacer.pack()
+            tk.Frame(main, bg=BG_COLOR, height=16).pack()
 
             sd = data.get("seven_day")
             if sd:
                 pct = sd.get("utilization", 0)
                 reset = parse_reset(sd.get("resets_at"))
                 bar = self._make_bar_section(
-                    container, "7-day Weekly", pct,
-                    f"Resets  {fmt_reset_date(reset)}",
+                    main, "7-day Weekly", pct,
+                    f"Resets {fmt_reset_date(reset)}",
                     inner_w
                 )
-                self._anim_bars.append({"canvas": bar, "target": pct, "current": 0, "width": inner_w})
+                self._anim_bars.append({"canvas": bar, "target": pct, "width": inner_w})
 
-        # ── Bottom divider + footer ───────────────────────────────────────────
-        tk.Frame(container, bg=DIVIDER_COLOR, height=1).pack(fill="x", pady=(12, 8))
+        # ── Footer ────────────────────────────────────────────────────────────
+        footer = tk.Frame(win, bg=BG_COLOR)
+        footer.pack(fill="x", padx=pad, pady=(8, 10))
 
         self._footer_label = tk.Label(
-            container,
-            text=f"Updated {datetime.now().strftime('%H:%M:%S')}",
-            bg=BG_COLOR, fg=TEXT_SECONDARY, font=("Segoe UI", 9), anchor="w"
+            footer, text="", bg=BG_COLOR, fg=MICRO_COLOR,
+            font=("Segoe UI", 9), anchor="w"
         )
-        self._footer_label.pack(fill="x")
+        self._footer_label.pack(side="left")
+        self._update_relative_time()
+
+        links_frame = tk.Frame(footer, bg=BG_COLOR)
+        links_frame.pack(side="right")
+
+        for text, url in [("DOCS", "https://docs.anthropic.com"), ("SUPPORT", "https://support.anthropic.com")]:
+            lbl = tk.Label(
+                links_frame, text=text, bg=BG_COLOR, fg=MICRO_COLOR,
+                font=("Segoe UI", 9), cursor="hand2"
+            )
+            lbl.pack(side="left", padx=(8, 0))
+            lbl.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
+            lbl.bind("<Enter>", lambda e, l=lbl: l.config(fg=ON_SURFACE))
+            lbl.bind("<Leave>", lambda e, l=lbl: l.config(fg=MICRO_COLOR))
 
         # ── Start bar animation ───────────────────────────────────────────────
         if self._anim_bars:
             self._anim_start_time = time.time()
             self._animate_bars()
+
+    # ── live "last updated" ticker ──────────────────────────────────────────
+
+    def _update_relative_time(self):
+        if not self.is_open:
+            return
+        with self.app._lock:
+            ts = self.app.last_updated
+        if ts:
+            delta = (datetime.now() - ts).total_seconds()
+            if delta < 5:
+                rel = "just now"
+            elif delta < 60:
+                rel = f"{int(delta)}s ago"
+            elif delta < 3600:
+                m = int(delta // 60)
+                rel = f"{m} minute{'s' if m != 1 else ''} ago"
+            else:
+                h = int(delta // 3600)
+                rel = f"{h} hour{'s' if h != 1 else ''} ago"
+            self._footer_label.config(text=f"Updated {rel}")
+        else:
+            self._footer_label.config(text="Updated —")
+        self._footer_label.after(1000, self._update_relative_time)
 
     # ── progress bar section ──────────────────────────────────────────────────
 
@@ -391,57 +414,56 @@ class UsagePopup:
                           caption: str, width: int,
                           reset_dt: datetime | None = None) -> tk.Canvas:
 
-        # Section title
+        # Title row: label left, percentage right
+        title_row = tk.Frame(parent, bg=BG_COLOR)
+        title_row.pack(fill="x")
+
         tk.Label(
-            parent, text=title, bg=BG_COLOR, fg=TEXT_PRIMARY,
-            font=("Segoe UI", 10), anchor="w"
-        ).pack(fill="x")
-
-        # Bar row: canvas + percentage label
-        bar_row = tk.Frame(parent, bg=BG_COLOR)
-        bar_row.pack(fill="x", pady=(4, 0))
-
-        bar_h = 8
-        canvas = tk.Canvas(
-            bar_row, width=width - 40, height=bar_h,
-            bg=BG_COLOR, highlightthickness=0
-        )
-        canvas.pack(side="left")
-
-        # Draw track
-        self._draw_rounded_rect(canvas, 0, 0, width - 40, bar_h, 4, TRACK_COLOR)
-        # Fill tag will be animated
-        canvas._fill_tag = "bar_fill"
-        canvas._bar_h = bar_h
-        canvas._bar_max_w = width - 40
-        canvas._fill_color = _bar_fill_color(pct)
+            title_row, text=title, bg=BG_COLOR, fg=ON_SURFACE,
+            font=("Segoe UI", 11, "normal"), anchor="w"
+        ).pack(side="left")
 
         pct_label = tk.Label(
-            bar_row, text=f"{int(pct)}%", bg=BG_COLOR, fg=TEXT_PRIMARY,
-            font=("Segoe UI", 10), anchor="e", width=4
+            title_row, text=f"{int(pct)}%", bg=BG_COLOR, fg=ON_SURFACE,
+            font=("Segoe UI", 11, "bold"), anchor="e"
         )
         pct_label.pack(side="right")
+
+        # Outlined progress bar (18px tall, 1px border, 3px inner padding)
+        bar_container_h = 18
+        canvas = tk.Canvas(
+            parent, width=width, height=bar_container_h,
+            bg=BG_COLOR, highlightthickness=0
+        )
+        canvas.pack(fill="x", pady=(4, 0))
+
+        # Outer border (draw as filled rect then inner bg rect to fake border)
+        self._draw_rounded_rect(canvas, 0, 0, width, bar_container_h, 6, ON_SURFACE)
+        self._draw_rounded_rect(canvas, 1, 1, width - 1, bar_container_h - 1, 5, BG_COLOR)
+
+        canvas._bar_h = bar_container_h
+        canvas._bar_max_w = width
         canvas._pct_label = pct_label
 
         # Caption
         cap = tk.Label(
-            parent, text=caption, bg=BG_COLOR, fg=TEXT_SECONDARY,
+            parent, text=caption, bg=BG_COLOR, fg=ON_SURFACE,
             font=("Segoe UI", 9), anchor="w"
         )
-        cap.pack(fill="x", pady=(2, 0))
+        cap.pack(fill="x", pady=(3, 0))
 
-        # Live countdown update for session bar
+        # Live countdown for session bar
         if reset_dt is not None:
-            self._schedule_countdown(cap, reset_dt)
+            self._schedule_countdown(cap, reset_dt, caption)
 
         return canvas
 
-    def _schedule_countdown(self, label: tk.Label, reset_dt: datetime):
+    def _schedule_countdown(self, label: tk.Label, reset_dt: datetime, caption_prefix: str):
         def update():
             if not self.is_open:
                 return
             try:
-                label.config(text=f"Resets in  {fmt_countdown(reset_dt)}")
+                label.config(text=f"Resets in {fmt_countdown(reset_dt)}")
                 label.after(1000, update)
             except Exception:
                 pass
@@ -470,9 +492,9 @@ class UsagePopup:
 
         elapsed = (time.time() - self._anim_start_time) * 1000
         t = min(elapsed / BAR_ANIM_MS, 1.0)
-        # ease-out cubic
-        eased = 1 - (1 - t) ** 3
+        eased = 1 - (1 - t) ** 3   # ease-out cubic
 
+        inset = 3   # px from border to fill edge
         for bar in self._anim_bars:
             canvas = bar["canvas"]
             target = bar["target"]
@@ -480,13 +502,15 @@ class UsagePopup:
             bar_h = canvas._bar_h
 
             current_pct = target * eased
-            fill_w = max(2, int(max_w * min(current_pct, 100) / 100))
+            inner_w = max_w - inset * 2
+            fill_w = max(0, int(inner_w * min(current_pct, 100) / 100))
 
             canvas.delete("bar_fill")
-            self._draw_rounded_rect(
-                canvas, 0, 0, fill_w, bar_h, 4,
-                canvas._fill_color, tag="bar_fill"
-            )
+            if fill_w > 0:
+                self._draw_rounded_rect(
+                    canvas, inset, inset, inset + fill_w, bar_h - inset,
+                    4, ON_SURFACE, tag="bar_fill"
+                )
             canvas._pct_label.config(text=f"{int(current_pct)}%")
 
         if t < 1.0:
@@ -495,8 +519,21 @@ class UsagePopup:
     # ── refresh from popup ────────────────────────────────────────────────────
 
     def _do_refresh(self):
-        self.close()
-        threading.Thread(target=self.app._refresh_once, daemon=True).start()
+        def refresh_and_update():
+            self.app._refresh_once()
+            if self.is_open and self.win:
+                self.win.after(0, self._rebuild)
+
+        threading.Thread(target=refresh_and_update, daemon=True).start()
+
+    def _rebuild(self):
+        """Rebuild popup content in-place after a refresh."""
+        if not self.is_open:
+            return
+        for w in self.win.winfo_children():
+            w.destroy()
+        self._build_content(self.win)
+        self.win.focus_force()
 
 
 # ── Main app state ────────────────────────────────────────────────────────────
@@ -506,6 +543,7 @@ class UsageApp:
         self.token: str | None = None
         self.last_data: dict | None = None
         self.error_msg: str | None = None
+        self.last_updated: datetime | None = None
         self._lock = threading.Lock()
         self.icon: pystray.Icon | None = None
         self._tk_root: tk.Tk | None = None
@@ -545,6 +583,7 @@ class UsageApp:
             with self._lock:
                 self.last_data = data
                 self.error_msg = None
+                self.last_updated = datetime.now()
         except ApiError as e:
             with self._lock:
                 self.error_msg = e.message
@@ -568,19 +607,7 @@ class UsageApp:
                     maybe_notify(self.icon, "Weekly (7d)", pct)
 
     def _update_icon(self):
-        if not self.icon:
-            return
-        with self._lock:
-            data = self.last_data
-
-        s_pct = w_pct = None
-        if data:
-            if data.get("five_hour"):
-                s_pct = data["five_hour"].get("utilization")
-            if data.get("seven_day"):
-                w_pct = data["seven_day"].get("utilization")
-
-        self.icon.icon = make_icon(s_pct, w_pct)
+        pass  # icon is static; data is shown in the popup
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
@@ -604,15 +631,16 @@ class UsageApp:
     def run(self):
         # Hidden tkinter root for popup windows
         self._tk_root = tk.Tk()
+        self._tk_root.tk.call("tk", "scaling", self._tk_root.winfo_fpixels("1i") / 72)
         self._tk_root.withdraw()
 
         self._popup = UsagePopup(self)
 
-        placeholder = make_icon(None, None)
+        tray_icon = Image.open(ICON_PATH).resize((64, 64), Image.LANCZOS)
 
         self.icon = pystray.Icon(
             name="claude_usage",
-            icon=placeholder,
+            icon=tray_icon,
             title="Claude Code Usage",
             menu=self._build_menu(),
         )
@@ -640,6 +668,7 @@ def _single_instance_check():
 
 if __name__ == "__main__":
     if sys.platform == "win32":
+        ctypes.windll.user32.SetProcessDPIAware()
         ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
         _mutex = _single_instance_check()
 
