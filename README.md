@@ -1,93 +1,90 @@
-# Claude Code Usage — Windows Tray App
+# Claude Code Usage Tray
 
-A lightweight system-tray app that shows your Claude Code **session (5h)** and
-**weekly (7d)** usage in real time, right in the Windows notification area.
+A Windows system tray app that shows your Claude Code usage at a glance.
 
----
+Left-click the tray icon to see a popup with your **5-hour session** and **7-day weekly** usage, complete with progress bars, reset countdowns, and a live "last updated" timer. Right-click for quick actions.
 
-## What it shows
+![screenshot](https://raw.githubusercontent.com/kpolacik/claude-usage-tray/master/screenshot.png)
 
-| Indicator | Meaning |
-|-----------|---------|
-| Top bar (5h) | % of your current 5-hour rolling session used |
-| Bottom bar (7d) | % of your 7-day weekly limit used |
-| Tooltip | Exact %s, countdown to session reset, weekly reset date |
-| Toast notification | Fires once when either bar crosses 75% or 90% |
+## Features
 
-Icon colours: 🟢 green < 75% · 🟡 amber 75–89% · 🔴 red 90%+
-
----
+- Session (5h) and weekly (7d) usage bars with percentages
+- Live countdown to session reset, date for weekly reset
+- Dark and light mode (toggle persists across restarts)
+- Windows toast notifications at 75% and 90% thresholds
+- Refreshes automatically every 5 minutes
+- Single-instance guard (won't run twice)
+- Starts with Windows (optional, see below)
 
 ## Requirements
 
-- Python 3.11+ (64-bit)
-- Windows 10/11
-- An active Claude Pro/Max subscription with Claude Code installed
-
----
+- **Python 3.11+** (64-bit)
+- **Windows 10 or 11**
+- An active **Claude Pro or Max** subscription with Claude Code installed
 
 ## Quick start
 
 ```bat
-pip install pystray Pillow requests
-python claude_usage_tray.py
+git clone https://github.com/kpolacik/claude-usage-tray.git
+cd claude-usage-tray
+pip install -r requirements.txt
+pythonw claude_usage_tray.py
 ```
 
-The app finds your token automatically from:
+The app reads your OAuth token automatically from:
+
 ```
 %USERPROFILE%\.claude\.credentials.json
 ```
-That file is created when you log into Claude Code for the first time.
 
----
+This file is created the first time you log into Claude Code.
 
 ## Token not found?
 
-If the app shows "Token not found", set this environment variable instead:
+If the popup shows "Token not found", you can set the token manually:
 
 ```bat
 set ANTHROPIC_AUTH_TOKEN=sk-ant-oat01-...
-python claude_usage_tray.py
+pythonw claude_usage_tray.py
 ```
 
-Or add it permanently via **System Properties → Environment Variables**.
-
----
-
-## Package as a standalone .exe (no Python needed)
-
-Install PyInstaller, then run:
-
-```bat
-pip install pyinstaller
-pyinstaller --noconsole --onefile --name ClaudeUsage claude_usage_tray.py
-```
-
-The `.exe` ends up in the `dist\` folder. Double-click it — no installation needed.
-
----
+Or add `ANTHROPIC_AUTH_TOKEN` permanently via **System Properties > Environment Variables**.
 
 ## Auto-start with Windows
 
-1. Press **Win + R**, type `shell:startup`, press Enter
-2. Create a shortcut to `ClaudeUsage.exe` (or `claude_usage_tray.pyw`) in that folder
-3. It will launch silently every time you log in
+1. Press **Win + R**, type `shell:startup`, Enter
+2. Create a shortcut in that folder pointing to:
+   ```
+   pythonw.exe "C:\path\to\claude_usage_tray.py"
+   ```
+3. The app will launch silently on every login
 
----
+## Build a standalone .exe
 
-## Configuration (top of the script)
+```bat
+pip install pyinstaller
+pyinstaller --noconsole --onefile --add-data "icon.png;." --name ClaudeUsage claude_usage_tray.py
+```
+
+The `.exe` appears in `dist\`. No Python needed to run it.
+
+## Configuration
+
+These constants are at the top of `claude_usage_tray.py`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `POLL_INTERVAL_SECONDS` | `60` | How often to refresh usage data |
-| `WARN_THRESHOLD` | `75` | % that turns the icon amber + sends a notification |
-| `CRIT_THRESHOLD` | `90` | % that turns the icon red + sends a notification |
+| `POLL_INTERVAL_SECONDS` | `300` | How often usage data is refreshed (seconds) |
+| `WARN_THRESHOLD` | `75` | % that triggers an amber notification |
+| `CRIT_THRESHOLD` | `90` | % that triggers a red notification |
 | `NOTIFY_ON_WARN` | `True` | Enable/disable Windows toast notifications |
 
----
+Theme preference (dark/light) is saved to `%USERPROFILE%\.claude\tray_prefs.json`.
 
 ## Disclaimer
 
-This app uses an **unofficial, undocumented** Anthropic endpoint
-(`/api/oauth/usage`). It may break if Anthropic changes the API.
-The token is read locally and never sent anywhere except Anthropic's servers.
+This app uses an **unofficial, undocumented** Anthropic endpoint (`/api/oauth/usage`). It may break if Anthropic changes the API. Your token is read locally and only sent to Anthropic's servers.
+
+## License
+
+MIT
