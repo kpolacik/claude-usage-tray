@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.idea/
+.claude/
+preview.png
+preview_4x.png
+dist/
+build/
+*.spec
