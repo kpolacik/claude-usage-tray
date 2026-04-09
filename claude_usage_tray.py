@@ -26,6 +26,7 @@ WARN_THRESHOLD = 75                 # % at which tray icon turns yellow
 CRIT_THRESHOLD = 90                 # % at which tray icon turns red
 NOTIFY_ON_WARN = True               # Windows toast when crossing warn threshold
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+TOKEN_REFRESH_URL = "https://claude.ai/api/auth/oauth/token"
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 ICON_PATH = Path(__file__).parent / "icon.png"
 
@@ -72,32 +73,67 @@ def theme() -> dict:
 
 # ── Token loading ─────────────────────────────────────────────────────────────
 
-def load_token() -> str | None:
-    """Try to load the OAuth access token from ~/.claude/.credentials.json"""
+def load_credentials() -> dict:
+    """Load access token, refresh token, and expiry from ~/.claude/.credentials.json"""
     try:
         data = json.loads(CREDENTIALS_PATH.read_text(encoding="utf-8"))
-        token = (
-            data.get("claudeAiOauth", {}).get("accessToken")
-            or data.get("oauthToken")
-            or data.get("accessToken")
-        )
-        if token:
-            return token
+        oauth = data.get("claudeAiOauth", {})
+        access = oauth.get("accessToken") or data.get("oauthToken") or data.get("accessToken")
+        return {
+            "access_token": access,
+            "refresh_token": oauth.get("refreshToken"),
+            "expires_at": oauth.get("expiresAt"),  # milliseconds epoch
+        }
     except Exception:
         pass
-
     env_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("CLAUDE_TOKEN")
-    if env_token:
-        return env_token
+    return {"access_token": env_token, "refresh_token": None, "expires_at": None}
 
-    return None
+
+def load_token() -> str | None:
+    """Convenience wrapper — returns just the access token."""
+    return load_credentials()["access_token"]
+
+
+def refresh_access_token(refresh_tok: str) -> dict | None:
+    """Exchange a refresh token for a new access token and persist it to disk.
+    Returns dict with access_token, expires_at, refresh_token on success, else None."""
+    try:
+        resp = requests.post(
+            TOKEN_REFRESH_URL,
+            data={"grant_type": "refresh_token", "refresh_token": refresh_tok},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        body = resp.json()
+        new_token = body.get("access_token")
+        if not new_token:
+            return None
+        new_expires_at = int((time.time() + body["expires_in"]) * 1000) if "expires_in" in body else None
+        new_refresh = body.get("refresh_token", refresh_tok)
+        try:
+            raw = json.loads(CREDENTIALS_PATH.read_text(encoding="utf-8"))
+            oauth = raw.setdefault("claudeAiOauth", {})
+            oauth["accessToken"] = new_token
+            if new_expires_at:
+                oauth["expiresAt"] = new_expires_at
+            oauth["refreshToken"] = new_refresh
+            CREDENTIALS_PATH.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        return {"access_token": new_token, "expires_at": new_expires_at, "refresh_token": new_refresh}
+    except Exception:
+        return None
 
 
 # ── API fetch ─────────────────────────────────────────────────────────────────
 
 class ApiError(Exception):
-    def __init__(self, message: str):
+    def __init__(self, message: str, code: int = 0):
         self.message = message
+        self.code = code
 
 
 def fetch_usage(token: str) -> dict:
@@ -116,9 +152,9 @@ def fetch_usage(token: str) -> dict:
         if resp.status_code == 200:
             return resp.json()
         if resp.status_code == 401:
-            raise ApiError("Token expired — restart Claude Code")
+            raise ApiError("Token expired — restart Claude Code", code=401)
         if resp.status_code == 429:
-            raise ApiError("Rate limited — retrying soon")
+            raise ApiError("Rate limited — retrying soon", code=429)
         raise ApiError(f"HTTP {resp.status_code}")
     except ApiError:
         raise
@@ -236,6 +272,7 @@ class UsagePopup:
     def __init__(self, app: "UsageApp"):
         self.app = app
         self.win: tk.Toplevel | None = None
+        self._overlay: tk.Toplevel | None = None
         self._anim_bars: list[dict] = []
         self._after_ids: list[str] = []
 
@@ -250,8 +287,14 @@ class UsagePopup:
             self.open()
 
     def close(self):
+        self._cancel_afters()
+        if self._overlay:
+            try:
+                self._overlay.destroy()
+            except Exception:
+                pass
+            self._overlay = None
         if self.win:
-            self._cancel_afters()
             try:
                 self.win.destroy()
             except Exception:
@@ -259,9 +302,10 @@ class UsagePopup:
             self.win = None
 
     def _cancel_afters(self):
+        root = self.win or self.app._tk_root
         for aid in self._after_ids:
             try:
-                self.win.after_cancel(aid)
+                root.after_cancel(aid)
             except Exception:
                 pass
         self._after_ids.clear()
@@ -273,6 +317,19 @@ class UsagePopup:
             self.close()
 
         root = self.app._tk_root
+
+        # Transparent fullscreen overlay — captures any click outside the popup
+        overlay = tk.Toplevel(root)
+        self._overlay = overlay
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        overlay.attributes("-alpha", 0.01)
+        sw = overlay.winfo_screenwidth()
+        sh = overlay.winfo_screenheight()
+        overlay.geometry(f"{sw}x{sh}+0+0")
+        # Delay binding so the tray click that opened us doesn't immediately close us
+        overlay.after(200, lambda: overlay.bind("<Button-1>", lambda e: self.close()))
+
         win = tk.Toplevel(root)
         self.win = win
 
@@ -294,39 +351,19 @@ class UsagePopup:
             hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
             if not hwnd:
                 hwnd = win.winfo_id()
-            # DWMWCP_ROUND = 2
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
                 hwnd, 33, ctypes.byref(ctypes.c_int(2)), 4
             )
-            # Remove the default thin border that appears with DWM rounding
-            # by setting DWMWA_BORDER_COLOR (34) to DWMWA_COLOR_NONE (0xFFFFFFFE)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
                 hwnd, 34, ctypes.byref(ctypes.c_uint(0xFFFFFFFE)), 4
             )
         except Exception:
             pass
 
-        # Close on click-outside or Escape
-        win.bind("<FocusOut>", lambda e: self._on_focus_out(e))
         win.bind("<Escape>", lambda e: self.close())
+        win.lift()  # ensure popup is above the overlay
 
         self._build_content(win)
-
-        win.after(10, lambda: win.focus_force())
-
-    def _on_focus_out(self, event):
-        if self.win and event.widget == self.win:
-            self.win.after(50, self._check_focus)
-
-    def _check_focus(self):
-        if not self.is_open:
-            return
-        try:
-            focused = self.win.focus_get()
-            if focused is None or not str(focused).startswith(str(self.win)):
-                self.close()
-        except Exception:
-            self.close()
 
     # ── content ───────────────────────────────────────────────────────────────
 
@@ -614,7 +651,7 @@ class UsagePopup:
         for w in self.win.winfo_children():
             w.destroy()
         self._build_content(self.win)
-        self.win.focus_force()
+        self.win.lift()
 
 
 # ── Main app state ────────────────────────────────────────────────────────────
@@ -622,6 +659,8 @@ class UsagePopup:
 class UsageApp:
     def __init__(self):
         self.token: str | None = None
+        self.refresh_tok: str | None = None
+        self.token_expires_at: int | None = None  # ms epoch
         self.last_data: dict | None = None
         self.error_msg: str | None = None
         self.last_updated: datetime | None = None
@@ -629,6 +668,8 @@ class UsageApp:
         self.icon: pystray.Icon | None = None
         self._tk_root: tk.Tk | None = None
         self._popup: UsagePopup | None = None
+        self._backoff_seconds: int = 0
+        self._backoff_max: int = 1800  # cap at 30 min
 
     # ── Menu (right-click only — minimal) ─────────────────────────────────────
 
@@ -646,49 +687,88 @@ class UsageApp:
     def _poll(self):
         while True:
             time.sleep(POLL_INTERVAL_SECONDS)
-            self._refresh_once()
+            was_rate_limited = self._refresh_once()
+            if was_rate_limited:
+                if self._backoff_seconds == 0:
+                    self._backoff_seconds = 60
+                else:
+                    self._backoff_seconds = min(self._backoff_seconds * 2, self._backoff_max)
+                time.sleep(self._backoff_seconds)
 
-    def _refresh_once(self):
-        if not self.token:
-            self.token = load_token()
+    def _maybe_notify(self, data: dict):
+        if not data or not NOTIFY_ON_WARN or not self.icon:
+            return
+        for bucket, label in [
+            (data.get("five_hour"), "Session (5h)"),
+            (data.get("seven_day"), "Weekly (7d)"),
+        ]:
+            if not bucket:
+                continue
+            pct = bucket.get("utilization", 0)
+            if pct >= WARN_THRESHOLD:
+                maybe_notify(self.icon, label, pct)
+            elif pct < WARN_THRESHOLD:
+                # Usage dropped (e.g. after reset) — allow re-notification
+                _notified.discard((label, True, True))
+                _notified.discard((label, False, True))
+
+    def _apply_refreshed(self, refreshed: dict):
+        self.token = refreshed["access_token"]
+        self.token_expires_at = refreshed["expires_at"]
+        self.refresh_tok = refreshed["refresh_token"]
+
+    def _try_fetch(self) -> dict | None:
+        """Attempt fetch_usage; on 401 try token refresh once. Returns data or raises ApiError."""
+        try:
+            return fetch_usage(self.token)
+        except ApiError as e:
+            if e.code != 401 or not self.refresh_tok:
+                raise
+            refreshed = refresh_access_token(self.refresh_tok)
+            if not refreshed:
+                raise
+            self._apply_refreshed(refreshed)
+            return fetch_usage(self.token)  # second attempt with fresh token
+
+    def _refresh_once(self) -> bool:
+        """Fetch usage data. Returns True if rate-limited, False otherwise."""
+        creds = load_credentials()
+        if creds["access_token"]:
+            self.token = creds["access_token"]
+            self.refresh_tok = creds["refresh_token"]
+            self.token_expires_at = creds["expires_at"]
 
         if not self.token:
             with self._lock:
                 self.error_msg = "Token not found \u2014 see README"
                 self.last_data = None
             self._update_icon()
-            return
+            return False
+
+        # Proactive refresh: renew the token if it expires within 60 seconds
+        if self.token_expires_at and self.refresh_tok:
+            if int(time.time() * 1000) >= self.token_expires_at - 60_000:
+                refreshed = refresh_access_token(self.refresh_tok)
+                if refreshed:
+                    self._apply_refreshed(refreshed)
 
         try:
-            data = fetch_usage(self.token)
+            data = self._try_fetch()
             with self._lock:
                 self.last_data = data
                 self.error_msg = None
                 self.last_updated = datetime.now()
+            self._backoff_seconds = 0
         except ApiError as e:
             with self._lock:
                 self.error_msg = e.message
                 self.last_data = None
             self._update_icon()
-            return
+            return e.code == 429
 
         self._update_icon()
-
-        # Notifications
-        if data and NOTIFY_ON_WARN and self.icon:
-            for bucket, label in [
-                (data.get("five_hour"), "Session (5h)"),
-                (data.get("seven_day"), "Weekly (7d)"),
-            ]:
-                if not bucket:
-                    continue
-                pct = bucket.get("utilization", 0)
-                if pct >= WARN_THRESHOLD:
-                    maybe_notify(self.icon, label, pct)
-                elif pct < WARN_THRESHOLD:
-                    # Usage dropped (e.g. after reset) — allow re-notification
-                    _notified.discard((label, True, True))
-                    _notified.discard((label, False, True))
+        self._maybe_notify(data)
+        return False
 
     def _update_icon(self):
         pass  # icon is static; data is shown in the popup

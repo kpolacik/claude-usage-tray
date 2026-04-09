@@ -1,0 +1,17 @@
+{
+  "name": "claude-usage",
+  "displayName": "Claude Code Usage",
+  "description": "Shows Claude Code 5h session and 7d weekly usage in the status bar",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.75.0" },
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeUsage.refresh",
+        "title": "Claude Usage: Refresh Now"
+      }
+    ]
+  }
+}
